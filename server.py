@@ -51,7 +51,7 @@ def get_audio_duration(wav_path: str) -> float:
     except:
         return 0
 
-def split_audio_chunks(wav_path: str, chunk_duration: int = 20) -> list:
+def split_audio_chunks(wav_path: str, chunk_duration: int = 25) -> list:
     """Split WAV file into chunks before passing to Whisper (which has 30s limit)."""
     duration = get_audio_duration(wav_path)
     logger.info(f"Audio duration: {duration:.1f}s")
@@ -130,9 +130,9 @@ async def transcribe(request: dict):
         transcriber = get_transcriber(phowhisper_model)
         logger.info(f"Transcribing with {phowhisper_model}")
 
-        # Split long audio into 20-second chunks BEFORE passing to Whisper
+        # Split long audio into 25-second chunks BEFORE passing to Whisper
         # This avoids the 30s model limit by ensuring chunks are pre-split
-        chunks = split_audio_chunks(tmp_path, chunk_duration=20)
+        chunks = split_audio_chunks(tmp_path, chunk_duration=25)
         texts = []
 
         for chunk_path in chunks:
