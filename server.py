@@ -16,6 +16,9 @@ import wave
 import librosa
 import soundfile as sf
 
+# Disable HuggingFace Hub connectivity checks to avoid background thread errors
+os.environ["HF_HUB_OFFLINE"] = "1"
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -33,9 +36,7 @@ def get_transcriber(model: str = "vinai/PhoWhisper-small"):
         _transcriber = pipeline(
             "automatic-speech-recognition",
             model=model,
-            device=device,
-            trust_remote_code=True,
-            model_kwargs={"num_beams": 1}
+            device=device
         )
         _current_model = model
     return _transcriber
