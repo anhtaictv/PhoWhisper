@@ -50,28 +50,42 @@ def get_audio_duration(wav_path: str) -> float:
     except:
         return 0
 
-def split_audio_chunks(wav_path: str, chunk_duration: int = 25) -> list:
-    """Split WAV file into chunks to avoid >30s limit."""
+def split_audio_chunks(wav_path: str, chunk_duration: int = 20) -> list:
+    """Split WAV file into chunks before passing to Whisper (which has 30s limit)."""
     duration = get_audio_duration(wav_path)
+    logger.info(f"Audio duration: {duration:.1f}s")
+
     if duration <= chunk_duration:
         return [wav_path]
 
     chunks = []
     try:
-        # Load audio with librosa
+        # Load audio with librosa (this is safe, doesn't trigger model validation)
+        logger.info(f"Loading audio for splitting into {chunk_duration}s chunks...")
         y, sr = librosa.load(wav_path, sr=None)
-        chunk_samples = chunk_duration * sr
+        chunk_samples = int(chunk_duration * sr)
 
         for i, start in enumerate(range(0, len(y), chunk_samples)):
             chunk_audio = y[start:start + chunk_samples]
             chunk_path = wav_path.replace('.wav', f'_chunk_{i}.wav')
-            sf.write(chunk_path, chunk_audio, sr)
-            chunks.append(chunk_path)
-            logger.info(f"Created chunk {i}: {len(chunk_audio)/sr:.1f}s")
-    except Exception as e:
-        logger.warning(f"Failed to split audio: {e}, using whole file")
-        return [wav_path]
 
+            # Write chunk WAV file
+            sf.write(chunk_path, chunk_audio, sr)
+
+            # Verify chunk duration
+            chunk_dur = len(chunk_audio) / sr
+            logger.info(f"Chunk {i}: {chunk_dur:.2f}s -> {chunk_path}")
+
+            if chunk_dur > chunk_duration + 0.5:  # allow small tolerance
+                logger.warning(f"Chunk {i} duration {chunk_dur}s exceeds limit, may fail")
+
+            chunks.append(chunk_path)
+
+    except Exception as e:
+        logger.error(f"Failed to split audio: {e}")
+        raise HTTPException(status_code=500, detail=f"Audio splitting failed: {e}")
+
+    logger.info(f"Split into {len(chunks)} chunks")
     return chunks
 
 @app.get("/")
@@ -101,7 +115,6 @@ async def transcribe(request: dict):
         raise HTTPException(status_code=400, detail="Missing 'audio' field")
 
     phowhisper_model = request.get("model", "vinai/PhoWhisper-small")
-    whisper_model_name = map_model_name(phowhisper_model)
 
     try:
         # Decode base64 audio
@@ -116,23 +129,43 @@ async def transcribe(request: dict):
         transcriber = get_transcriber(phowhisper_model)
         logger.info(f"Transcribing with {phowhisper_model}")
 
-        # Split long audio into 25-second chunks to avoid model limit
-        chunks = split_audio_chunks(tmp_path, chunk_duration=25)
+        # Split long audio into 20-second chunks BEFORE passing to Whisper
+        # This avoids the 30s model limit by ensuring chunks are pre-split
+        chunks = split_audio_chunks(tmp_path, chunk_duration=20)
         texts = []
 
         for chunk_path in chunks:
             try:
+                chunk_dur = get_audio_duration(chunk_path)
+                logger.info(f"Transcribing chunk: {chunk_dur:.2f}s")
+
+                # Pass pre-split chunk to model
                 result = transcriber(chunk_path)
-                texts.append(result.get("text", ""))
+                text = result.get("text", "").strip()
+
+                if text:
+                    texts.append(text)
+                    logger.info(f"Chunk result: {text[:100]}...")
+                else:
+                    logger.warning(f"Empty transcription for chunk: {chunk_path}")
+
+            except Exception as chunk_error:
+                logger.error(f"Chunk transcription failed: {chunk_error}")
+                raise HTTPException(status_code=500, detail=f"Chunk transcription error: {chunk_error}")
+
             finally:
+                # Cleanup chunk files (but not the original temp file yet)
                 if chunk_path != tmp_path:
                     Path(chunk_path).unlink(missing_ok=True)
 
-        # Cleanup
+        # Cleanup original temp file
         Path(tmp_path).unlink(missing_ok=True)
 
+        final_text = " ".join(texts).strip()
+        logger.info(f"Final transcription ({len(texts)} chunks): {final_text[:200]}...")
+
         return {
-            "text": " ".join(texts).strip(),
+            "text": final_text,
             "model": phowhisper_model
         }
 
